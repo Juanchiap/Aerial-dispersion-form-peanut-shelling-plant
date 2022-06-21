@@ -1,0 +1,239 @@
+---
+title: "Model_conteo"
+author: "Juan Paredes"
+date: "6/1/2022"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+```{r markdown-settings, echo=FALSE}
+knitr::opts_chunk$set(
+  fig.width = 10,
+  fig.height = 10,
+  message = FALSE,
+  warning = FALSE,
+  echo=TRUE
+)
+``` 
+
+## Load package and data, making the df
+
+```{r cars}
+pacman::p_load(GGally, rio, ggcorrplot, viridis, see, ggeffects, car, dplyr, tidyquant)
+
+pacman::p_load(
+  gratia,
+  tidyverse,
+  tidyquant,
+  readxl,
+  skimr,       # exploracion numerica de los datos
+  performance, # evaluar performance de los modelos
+  )
+
+pacman::p_load(caret)
+
+conteo <- read_excel("data/spore_count.xlsx",
+                        sheet = "All_data")
+conteo <- conteo %>%
+  mutate(cm2  =n_spore/1.2)
+
+conteo <- conteo %>%
+  filter(cm2  !="NA")
+
+conteo <- conteo %>%
+  mutate(station  =recode(station  ,"1" ="500", "2" ="1000", "3" ="1500", "4" ="2000"))
+
+conteo <- conteo %>% 
+  mutate_at(vars(station), as.numeric)%>% 
+  mutate_at(vars(loc), as.factor)
+
+conteo <- conteo %>%
+  mutate(loc  =recode(loc  ,"Alejandro" = "Alejandro Roca")) 
+
+conteo_num <- conteo 
+
+# conteo <- conteo %>%
+#   mutate(time_num = time) 
+
+conteo <- conteo %>%
+  mutate(time  =recode(time  ,"1" ="06-Ene", "2" ="21-Ene", "3" ="03-Feb", "4" ="19-Feb", "5" ="4-Mar")) 
+
+conteo <- conteo %>%
+  mutate(time= fct_relevel(time,"06-Ene","21-Ene", "03-Feb", "19-Feb", "4-Mar"))
+
+conteo <- conteo %>% 
+  mutate_at(vars(date), as.Date) 
+
+view(conteo)
+Sys.Date()
+pacman::p_load(lubridate)
+
+conteo <-conteo %>% 
+  mutate(time_num = difftime(ymd(conteo$date), ymd('2020-12-22'), "days"))
+
+conteo <- conteo %>% 
+  mutate_at(vars(time_num), as.numeric) 
+
+str(conteo)
+
+```
+
+## Plot the data
+
+```{r}
+conteo  %>% 
+  ggplot(aes(x =station, y =cm2)) +
+  geom_point()+
+  stat_smooth()+
+  xlab('Distancia desde industria (m)')+
+  ylab(bquote('Conteo de esporas '(cm^2)))+
+  # facet_wrap(~loc, scales= "free")+
+  theme_bw()+
+  theme(legend.position = "bottom")+
+  labs(col = "")
+```
+
+Chequear overdispersion para ver tipo de familia
+```{r}
+# Build the model
+modelpoisson <- glm(cm2 ~ station*time*loc, 
+               family = poisson,data = conteo)
+
+summary(modelpoisson)
+
+oldpar <- par(oma=c(0,0,3,0),mfrow=c(2,2))
+
+plot(modelpoisson)
+
+check_overdispersion(modelpoisson) ## Se detectó overdispersión
+
+modelquasip <- glm(cm2 ~ station*time*loc, 
+               family = quasipoisson(),data = conteo)
+
+Anova(modelquasip,
+      type = "II",
+      test = "LR")
+
+```
+
+## GAM
+
+Incluir variables al modelo, distintos tipos de familia, y lograr ver cuál es el que mejor performance tiene
+
+```{r}
+
+model_gam1 <- gam(cm2 ~ s(station, k = 4)+
+                  s(loc, bs = "re" ), 
+                  data = conteo,
+                  method = "REML")
+
+summary(model_gam1)
+gam.check(model_gam1)
+
+model_gam2 <- gam(cm2 ~ s(station, k = 4)+ 
+             s(time_num, k = 5)+
+             s(loc, bs = "re" ),
+             method = "REML",
+             data = conteo,
+             family = quasipoisson)
+
+model_gam2.1 <- gam(cm2 ~ s(station, k = 4)+ 
+             s(time_num, k = 5)+
+             s(loc, bs = "re" ),
+             # select = TRUE,
+             method = "REML",
+             data = conteo,
+             )
+
+summary(model_gam2.1)
+gam.check(model_gam2.1)
+
+
+model_gam3 <- gam(cm2 ~ s(station, k = 4)+ 
+             s(time_num, k = 5)+
+             s(loc, bs = "re" ),
+             # select = TRUE,
+             method = "REML",
+             data = conteo,
+             family = tw)
+
+summary(model_gam3)
+gam.check(model_gam3)
+
+```
+
+
+```{r}
+library("ggpubr")
+pacman::p_load()
+pacman::p_load(npreg)
+
+
+compare_performance(model_gam1, model_gam2, model_gam3) %>% 
+  kableExtra::kbl() 
+
+anova(model_gam1, model_gam2, model_gam3, test="Chisq")
+
+acf(residuals(model_gam2))
+pacf(residuals(model_gam2))
+
+
+oldpar <- par(oma=c(0,0,0,0),mfrow=c(1,1))
+
+layout(matrix(1:1, ncol = 1))
+
+draw(model_gam2)& theme_bw()
+
+ggsave(w=160,h=120, units="mm", dpi = 300,  "plot/gam2.tiff")
+
+```
+
+## Intento de gráfica
+```{r}
+layout(matrix(1:2, ncol = 2))
+plot(model_gam2, select = 1, main = "Espacialidad", 
+     xlab = "Distancia desde la industria (m)", ylab = "Efecto parcial")
+
+plot(model_gam2, select = 2, main = "Temporalidad",
+     xlab = "Fecha de colecta (días)", ylab = "Efecto parcial")
+
+ggsave(w=160,h=120, units="mm", dpi = 300,  "plot/gam2.tiff")
+
+```
+
+## Prediction
+
+```{r}
+
+
+station <- seq(500, 2000, by = 500)
+
+newd <- expand_grid(
+  time_num = c(15, 30, 42),
+  station = station,
+  # x = station,
+  # y = station,
+  loc = c("General Deheza", "Hernando", "Alejandro Roca"))
+  
+newd$pred_spore_cm2 <- predict(model_gam2.1, newd)
+
+view(newd)
+
+# export(newd, file="data/newd.xlsx")
+
+predictions <-
+  newd %>%
+  # mutate(pred_spore_cm2 = replace(pred_spore_cm2, pred_spore_cm2 < 0, 0)) %>%
+  ggplot(aes(x = as_factor(station), y = pred_spore_cm2)) +
+  geom_violin() +
+  # geom_smooth() +
+  facet_wrap(~loc)+
+  labs(x = "Distance from industry (m)",
+       y = "Predicted Spores / cm²")
+
+predictions
+
+# ggsave(w=160,h=120, units="mm", dpi = 300,  "plot/prediction.tiff")
+
+```
+
